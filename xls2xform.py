@@ -37,6 +37,7 @@ def add_label(xml_str, node):
 tag_start_char = r"[a-zA-Z:_]"
 tag_char = r"[a-zA-Z:_0-9\-\.]"
 xform_tag_regexp = "^%(start)s%(char)s*$" % {"start" : tag_start_char, "char" : tag_char}
+supported_media = ["image", "audio", "video"]
 
 def construct_choice_lists(sheet):
     """Return a dictionary of multiple choice lists from the Excel
@@ -62,7 +63,79 @@ def construct_choice_lists(sheet):
             d[list_name].append(c)
         else:
             d[list_name] = [c]
+        
     return d
+    
+def construct_translation_lists(sheet):
+    d = {}
+    for row in range(1, sheet.nrows):
+        c = {}
+        for col in range(0,sheet.ncols):
+           c[sheet.cell(0,col).value] = sheet.cell(row,col).value
+        label = c.pop("tag")
+        if label in d:
+            d[label].append(c)
+        else:
+            d[label] = [c]
+        
+    return d
+ 
+def construct_itext_node(doc, translation, id, label):
+    text = doc.createElement("text")
+    text.setAttribute("id", id)
+    translation.appendChild(text)
+	#Fill in the children
+    long = doc.createElement("value")
+    short = doc.createElement("value")
+    if not label.strip() == '':
+        long.appendChild(doc.createTextNode(label))
+    long.setAttribute("form", "long")
+    if not label.strip() == '':
+        short.appendChild(doc.createTextNode(label))
+    short.setAttribute("form", "short")
+    text.appendChild(long)
+    text.appendChild(short)
+    return text 
+ 
+def construct_choice_itext(sheet, doc, translations_list, choice_translations):
+    selectMedia = []
+    for row in range(1,sheet.nrows):
+        c = {}
+        for col in range(0,sheet.ncols):
+            c[sheet.cell(0,col).value] = sheet.cell(row,col).value
+        list_name = c.pop("list name")
+        
+        itext_translations = []
+        
+        if list_name in choice_translations:
+            this_choice_translations = choice_translations[list_name]
+            for t in this_choice_translations: 
+                if c["label"] == t["label"]:
+                    itext_translations.append(construct_itext_node(doc, translations_list[t['language']], list_name+t['label'], t['translation']))
+                    translated = True
+ 
+        #Check for media and create itext
+        mediaFound = False
+        for attribute in c:    
+            
+            if attribute in supported_media and c[attribute] != "":
+                if not mediaFound:
+                    selectMedia.append(list_name+str(c["value"]))
+                    text = construct_itext_node(doc, translations_list['default'], list_name+str(c["value"]),c["label"]) 
+                    itext_translations.append(text)
+                
+                for translation in  itext_translations:
+                    media = doc.createElement("value")
+                    media.setAttribute("form", attribute)
+                    if attribute == "audio":
+                        media.appendChild(doc.createTextNode("jr://" + attribute + "/" + str(c[attribute])))
+                    else:
+                        media.appendChild(doc.createTextNode("jr://" + attribute + "s/" + str(c[attribute])))
+                    translation.appendChild(media)
+                mediaFound = True
+                
+    return selectMedia
+
 
 
 def write_xforms(xls_file_path):
@@ -82,10 +155,13 @@ def write_xforms(xls_file_path):
 
     choice_sheet = "Select Choices"
     choices = construct_choice_lists( workbook.sheet_by_name(choice_sheet) )
+    translation_sheet = "Translations"
+    translations = construct_translation_lists( workbook.sheet_by_name(translation_sheet))
+    choice_translation_sheet = "Select Translations"
+    choice_translations = construct_choice_lists(workbook.sheet_by_name(choice_translation_sheet))
 
     for sheet in workbook.sheets():
-        if sheet.name != choice_sheet:
-
+        if sheet.name!=translation_sheet and sheet.name!=choice_sheet and sheet.name!=choice_translation_sheet:
             doc = Document()
 
             html = doc.createElement("h:html")
@@ -95,19 +171,46 @@ def write_xforms(xls_file_path):
             html.setAttribute( "xmlns:xsd" , "http://www.w3.org/2001/XMLSchema"  )
             html.setAttribute( "xmlns:jr"  , "http://openrosa.org/javarosa"      )
 
-            head     = doc.createElement("h:head")
-            title    = doc.createElement("h:title")
-            model    = doc.createElement("model")
-            instance = doc.createElement("instance")
-            body     = doc.createElement("h:body")
-
+            head         = doc.createElement("h:head")
+            title        = doc.createElement("h:title")
+            model        = doc.createElement("model")
+            itext        = doc.createElement("itext")
+            instance     = doc.createElement("instance")
+            body         = doc.createElement("h:body")
+            
+            translations_list = {'default': doc.createElement("translation")}
+            
+            #populate translations list
+            lang_label = sheet.cell(1,0).value
+            if lang_label == 'default language': 
+                translations_list['default'].setAttribute('lang', sheet.cell(1,1).value)
+                translations_list['default'].setAttribute('default', sheet.cell(1,1).value)
+                itext.appendChild(translations_list['default'])
+            else:
+                raise ConversionError("No default langauge provided")
+                
+            #Read in all the translation languages
+            index = 2
+            lang_label = sheet.cell(index,0).value
+            while lang_label == 't language':
+                translations_list[sheet.cell(index,1).value] = doc.createElement('translation')
+                translations_list[sheet.cell(index,1).value].setAttribute('lang', sheet.cell(index,1).value)
+                itext.appendChild(translations_list[sheet.cell(index,1).value])
+                index = index + 1
+                lang_label = sheet.cell(index, 0).value
+            
+            
+            selectMedia = construct_choice_itext(workbook.sheet_by_name(choice_sheet), doc, translations_list, choice_translations)
+            
+            
             # put the nodes together
-            # html: (head: (title, model: (instance)), body)
+            # html: (head: (title, model: (itext, instance)), body)
             doc.appendChild(html)
             html.appendChild(head)
             html.appendChild(body)
             head.appendChild(title)
             head.appendChild(model)
+            model.appendChild(itext)
             model.appendChild(instance)
 
             # fill in the content of the survey
@@ -135,7 +238,7 @@ def write_xforms(xls_file_path):
                     return str
 
             # go through each question of the survey updating the xform
-            for row in range(1,sheet.nrows):
+            for row in range(index,sheet.nrows):
                 q = {}
                 for col in range(0,sheet.ncols):
                     label = sheet.cell(0,col).value.lower()
@@ -160,7 +263,9 @@ def write_xforms(xls_file_path):
                     ixpath = xpath(instance,inode)
                     tag_xpath[tag] = ixpath
 
-                m = re.search(r"(begin|end) (survey|group|repeat)", command)
+
+
+                m = re.search(r"(begin|end) (survey|group|repeat)($| field-list| conditional-field-list)", command)
                 if m:
                     w = m.groups()
                     if w[0]=="begin":
@@ -173,6 +278,8 @@ def write_xforms(xls_file_path):
                         if w[1] in ["group", "repeat"]:
                             bhead = bhead.appendChild(doc.createElement("group"))
                             bhead.setAttribute("ref", ixpath)
+                            if w[2] and (w[2] == ' field-list' or w[2] == ' conditional-field-list'):
+                                bhead.setAttribute("appearance", w[2].strip())
                             add_label(q["label"], bhead)
                             if w[1]=="repeat":
                                 bhead = bhead.appendChild(doc.createElement("repeat"))
@@ -186,13 +293,22 @@ def write_xforms(xls_file_path):
                             bhead = bhead.parentNode
                         if w[1]=="repeat":
                             bhead = bhead.parentNode.parentNode
+
                 else:
+                    #Initialize mediaFound to False for each iteration
+                    mediaFound = False
+                        
                     m = re.search(r"^q (string|select|select1|int|geopoint|decimal|date|picture|note)( (.*))?$", command)
                     if not m:
                         raise ConversionError(u"Unrecognized command", command)
                     w = m.groups()
-                    label = q.pop("label")
-
+                    
+                    
+                    if 'label' in q:
+                        label = q.pop("label")
+                    else:
+                        label = ''
+						
                     bind = doc.createElement("bind")
                     if w[0]=="note":
                         bind.setAttribute("type", "string")
@@ -208,12 +324,37 @@ def write_xforms(xls_file_path):
                     if w[0]=="note":
                         # notes are always skippable
                         bind.removeAttribute("required")
+                        
+                    t_nodes = []
+                    if tag in translations.keys():
+                        itextNode = construct_itext_node(doc, translations_list['default'], tag, label)
+                        t_nodes.append(itextNode)
+                        for element in translations[tag]:
+                            text = construct_itext_node(doc, translations_list[element['language']], tag, element['translation'])
+                            t_nodes.append(text)
 
                     for attribute in q.keys():
                         # right now we're not supporting any binding attributes
                         supported_attributes = ["relevant"]
                         if attribute in supported_attributes:
                             bind.setAttribute(attribute, sub_tag(q[attribute]))
+                        #If media is found, create the itext entries
+                        elif attribute in supported_media:
+                    	    if not mediaFound and tag not in translations.keys(): #Initialize the itext entry
+                    	        itextNode = construct_itext_node(doc, translations_list['default'], tag, label)
+                    	        t_nodes.append(itextNode)
+                    	        
+                    	    for t_node in t_nodes:
+                    	        media = doc.createElement("value")
+                    	        media.setAttribute("form", attribute)
+                    	        if attribute == "audio":
+                    	            media.appendChild(doc.createTextNode("jr://" + attribute + "/" + sub_tag(q[attribute])))
+                    	        else:
+                    	            media.appendChild(doc.createTextNode("jr://" + attribute + "s/" + sub_tag(q[attribute])))
+                    	    
+                    	        t_node.appendChild(media)
+                    	    mediaFound = True
+                    	    
                     bind.setAttribute("nodeset", ixpath)
                     model.appendChild(bind)
 
@@ -230,7 +371,14 @@ def write_xforms(xls_file_path):
                     if w[0]=="picture":
                         bnode.setAttribute("mediatype", "image/*")
                     bnode.setAttribute("ref", ixpath)
-                    add_label(label, bnode)
+                    if not mediaFound and not tag in translations.keys():
+                        if label.strip() == '':
+                            raise ConversionError(u"If there are no media files in your question you must provide a label", tag)
+                        add_label(label, bnode)
+                    else:
+                        itextLabel = doc.createElement("label")
+                        itextLabel.setAttribute("ref", "jr:itext('" + tag + "')")
+                        bnode.appendChild(itextLabel)
                     bhead.appendChild(bnode)
 
                     if w[0] in ["select", "select1"]:
@@ -239,7 +387,15 @@ def write_xforms(xls_file_path):
                         for c in choices[w[2]]:
                             v = str(c["value"])
                             item = doc.createElement("item")
-                            add_label(c["label"], item)
+                            if selectMedia != None and (w[2] + str(c["value"])) in selectMedia:
+                                itextLabel = doc.createElement("label")
+                                itextLabel.setAttribute("ref", "jr:itext('" + w[2] + str(c["value"]) + "')")
+                                item.appendChild(itextLabel)
+                            else: 
+                                if c["label"].strip() == '':
+                                    raise ConversionError(u"If there are no media files in your select answer you must provide a label", tag)
+                                add_label(c["label"], item)
+                            
                             if re.search("\s", v):
                                 raise ConversionError(u"Multiple choice values are not allowed to have spaces", v)
                             item.appendChild(doc.createElement("value")).appendChild(doc.createTextNode(v))
