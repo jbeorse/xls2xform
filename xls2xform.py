@@ -138,7 +138,7 @@ def construct_choice_itext(sheet, doc, translations_list, choice_translations):
 
 
 
-def write_xforms(xls_file_path):
+def write_xforms(xls_file_path, prettyPrint):
     """Convert a properly formatted excel file into XForms for use with
     Open Data Kit. Return a list of all the XForms created.
 
@@ -278,6 +278,11 @@ def write_xforms(xls_file_path):
                         if w[1] in ["group", "repeat"]:
                             bhead = bhead.appendChild(doc.createElement("group"))
                             bhead.setAttribute("ref", ixpath)
+                            if "relevant" in q:
+                                bind = doc.createElement("bind")
+                                bind.setAttribute("relevant", sub_tag(q["relevant"]))
+                                bind.setAttribute("nodeset", ixpath)
+                                model.appendChild(bind)
                             if w[2] and (w[2] == ' field-list' or w[2] == ' conditional-field-list'):
                                 bhead.setAttribute("appearance", w[2].strip())
                             add_label(q["label"], bhead)
@@ -306,6 +311,7 @@ def write_xforms(xls_file_path):
                     
                     if 'label' in q:
                         label = q.pop("label")
+                        label = sub_tag(label)
                     else:
                         label = ''
 						
@@ -410,8 +416,12 @@ def write_xforms(xls_file_path):
 
             outfile = os.path.join(folder, re.sub(r"\s+", "_", sheet.name) + ".xml")
             f = open(outfile, "w")
-            # f.write( doc.toprettyxml(indent="  ").encode("utf-8") )
-            f.write( doc.toxml().encode("utf-8") )
+            
+            if prettyPrint:
+                f.write( doc.toprettyxml(indent="  ").encode("utf-8") )
+            else:
+                f.write( doc.toxml().encode("utf-8") )
+            
             f.close()
             xforms.append(outfile)
     return xforms
@@ -419,7 +429,10 @@ def write_xforms(xls_file_path):
 # call write_xforms on the absolute path of the excel file passed as
 # an argument
 if len(sys.argv)==2 and sys.argv[0]=="xls2xform.py":
-    write_xforms(os.path.join(os.getcwd(), sys.argv[1]))
+    write_xforms(os.path.join(os.getcwd(), sys.argv[1]), False)
+    
+if len(sys.argv)==3 and sys.argv[0]=="xls2xform.py" and sys.argv[1]=="-p":
+	write_xforms(os.path.join(os.getcwd(), sys.argv[2]), True)
 
 
 # NOTES:
