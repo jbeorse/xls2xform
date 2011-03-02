@@ -33,11 +33,37 @@ def add_label(xml_str, node):
         s = u'<?xml version="1.0" ?><label>' + xml_str + u"</label>"
         node.appendChild( parseString(s.encode("utf-8")).documentElement )
 
+def add_itext_translation_text_value(xml_str, form, node):
+    """Add a text form to an itext translation text's list of children, the XML contained in
+    that label comes from xml_str.
+
+    We want to make referencing variables easier, maybe using
+    $varname."""
+    if xml_str:
+        s = u'<?xml version="1.0" ?><value form="' + form + u'">' + xml_str + u"</value>"
+        # print s
+        node.appendChild( parseString(s.encode("utf-8")).documentElement )
+
 # http://www.w3.org/TR/REC-xml/
 tag_start_char = r"[a-zA-Z:_]"
 tag_char = r"[a-zA-Z:_0-9\-\.]"
 xform_tag_regexp = "^%(start)s%(char)s*$" % {"start" : tag_start_char, "char" : tag_char}
 supported_media = ["image", "audio", "video"]
+tag_xpath = {}
+
+def sub_tag(str):
+    """Replace all instances of '${tag}' with the XPath corresponding to the tag."""
+    bracketed_tag = r"(\${" + tag_start_char + tag_char + r"*})"
+    m = re.search(bracketed_tag, str)
+    if m:
+        tag = m.group(1)
+        tag = tag[2:len(tag)-1]
+        if tag not in tag_xpath:
+            raise ConversionError("Undefined tag in ${} substitution", tag)
+        single_replace = str[:m.start()] + tag_xpath[tag] + str[m.end():]
+        return sub_tag(single_replace)
+    else:
+        return str
 
 def construct_choice_lists(sheet):
     """Return a dictionary of multiple choice lists from the Excel
@@ -85,16 +111,8 @@ def construct_itext_node(doc, translation, id, label):
     text.setAttribute("id", id)
     translation.appendChild(text)
 	#Fill in the children
-    long = doc.createElement("value")
-    short = doc.createElement("value")
-    if not label.strip() == '':
-        long.appendChild(doc.createTextNode(label))
-    long.setAttribute("form", "long")
-    if not label.strip() == '':
-        short.appendChild(doc.createTextNode(label))
-    short.setAttribute("form", "short")
-    text.appendChild(long)
-    text.appendChild(short)
+    add_itext_translation_text_value(sub_tag(label), "long", text)
+    add_itext_translation_text_value(sub_tag(label), "short", text)
     return text 
  
 def construct_choice_itext(sheet, doc, translations_list, choice_translations):
@@ -116,8 +134,7 @@ def construct_choice_itext(sheet, doc, translations_list, choice_translations):
  
         #Check for media and create itext
         mediaFound = False
-        for attribute in c:    
-            
+        for attribute in c:
             if attribute in supported_media and c[attribute] != "":
                 if not mediaFound:
                     selectMedia.append(list_name+str(c["value"]))
@@ -221,21 +238,6 @@ def write_xforms(xls_file_path, prettyPrint):
             bhead = body
 
             control_stack = []
-            tag_xpath = {}
-
-            def sub_tag(str):
-                """Replace all instances of '${tag}' with the XPath corresponding to the tag."""
-                bracketed_tag = r"(\${" + tag_start_char + tag_char + r"*})"
-                m = re.search(bracketed_tag, str)
-                if m:
-                    tag = m.group(1)
-                    tag = tag[2:len(tag)-1]
-                    if tag not in tag_xpath:
-                        raise ConversionError("Undefined tag in ${} substitution", tag)
-                    single_replace = str[:m.start()] + tag_xpath[tag] + str[m.end():]
-                    return sub_tag(single_replace)
-                else:
-                    return str
 
             # go through each question of the survey updating the xform
             for row in range(index,sheet.nrows):
@@ -302,12 +304,17 @@ def write_xforms(xls_file_path, prettyPrint):
                 else:
                     #Initialize mediaFound to False for each iteration
                     mediaFound = False
-                        
-                    m = re.search(r"^q (string|select|select1|int|geopoint|decimal|date|picture|note)( (.*))?$", command)
-                    if not m:
-                        raise ConversionError(u"Unrecognized command", command)
-                    w = m.groups()
                     
+                    command = command.strip()
+                    w = re.split(r"\s+", command)
+                    if len(w) < 2:
+                        raise ConversionError(u"Unrecognized command", command)
+                    if w[0]!="q":
+                        raise ConversionError(u"Unrecognized command", command)
+                    w.pop(0)
+                    if w[0] not in ["string", "select", "select1", "int", "geopoint", "decimal", "date", "audio", "image", "video", "barcode", "note"]:
+                        raise ConversionError(u"Unrecognized command", command)
+                        
                     
                     if 'label' in q:
                         label = q.pop("label")
@@ -319,17 +326,19 @@ def write_xforms(xls_file_path, prettyPrint):
                     if w[0]=="note":
                         bind.setAttribute("type", "string")
                         bind.setAttribute("readonly", "true()")
-                    elif w[0]=="picture":
+                    elif w[0]=="audio":
+                        bind.setAttribute("type", "binary")
+                    elif w[0]=="image":
+                        bind.setAttribute("type", "binary")
+                    elif w[0]=="video":
                         bind.setAttribute("type", "binary")
                     else:
                         bind.setAttribute("type", w[0])
 
-                    skippable = q.pop("skippable", None)
-                    if not skippable:
-                        bind.setAttribute("required", "true()")
-                    if w[0]=="note":
-                        # notes are always skippable
-                        bind.removeAttribute("required")
+                    required = q.pop("required", None)
+                    if w[0]!="note":
+                        if required != None:
+                            bind.setAttribute("required", required)
                         
                     t_nodes = []
                     if tag in translations.keys():
@@ -372,11 +381,24 @@ def write_xforms(xls_file_path, prettyPrint):
                                     "note"     : "input",
                                     "select"   : "select",
                                     "select1"  : "select1",
-                                    "picture"  : "upload",}
+                                    "audio"  : "upload",
+                                    "image"  : "upload",
+                                    "video"  : "upload",
+                                    "barcode"  : "input",}
                     bnode = doc.createElement(control_type[w[0]])
-                    if w[0]=="picture":
+                    
+                    
+                    if w[0]=="audio":
+                        bnode.setAttribute("mediatype", "audio/*")
+                    if w[0]=="image":
                         bnode.setAttribute("mediatype", "image/*")
+                    if w[0]=="video":
+                        bnode.setAttribute("mediatype", "video/*")
                     bnode.setAttribute("ref", ixpath)
+                    
+                    if w[0] in ["select1"]:
+                        if len(w) == 3:
+                            bnode.setAttribute("appearance", w[2])
                     if not mediaFound and not tag in translations.keys():
                         if label.strip() == '':
                             raise ConversionError(u"If there are no media files in your question you must provide a label", tag)
@@ -388,14 +410,16 @@ def write_xforms(xls_file_path, prettyPrint):
                     bhead.appendChild(bnode)
 
                     if w[0] in ["select", "select1"]:
-                        if w[2] not in choices:
-                            raise ConversionError("No multiple choice list with this name", {"name" : w[2], "sheet" : sheet.name, "row" : row })
-                        for c in choices[w[2]]:
+                        if w[1] not in choices:
+                            raise ConversionError("No multiple choice list with this name", {"name" : w[1], "sheet" : sheet.name, "row" : row })
+                        for c in choices[w[1]]:
                             v = str(c["value"])
+
+                            
                             item = doc.createElement("item")
-                            if selectMedia != None and (w[2] + str(c["value"])) in selectMedia:
+                            if selectMedia != None and (w[1] + str(c["value"])) in selectMedia:
                                 itextLabel = doc.createElement("label")
-                                itextLabel.setAttribute("ref", "jr:itext('" + w[2] + str(c["value"]) + "')")
+                                itextLabel.setAttribute("ref", "jr:itext('" + w[1] + str(c["value"]) + "')")
                                 item.appendChild(itextLabel)
                             else: 
                                 if c["label"].strip() == '':
@@ -414,7 +438,7 @@ def write_xforms(xls_file_path, prettyPrint):
             else:
                 raise ConversionError(u"Worksheet never called the begin survey command", sheet.name)
 
-            outfile = os.path.join(folder, re.sub(r"\s+", "_", sheet.name) + ".xml")
+            outfile = re.sub(".xls$", ".xml", xls_file_path)
             f = open(outfile, "w")
             
             if prettyPrint:
